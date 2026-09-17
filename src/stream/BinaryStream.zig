@@ -1,8 +1,8 @@
 const std = @import("std");
 const Endianess = @import("../enums/Endianess.zig").Endianess;
 
-/// Default buffer size for write streams (1MB)
-pub const DEFAULT_BUFFER_SIZE: usize = 1024 * 1024;
+/// Default buffer size for write streams (64KB)
+pub const DEFAULT_BUFFER_SIZE: usize = 64 * 1024;
 
 pub const BinaryStream = struct {
     /// The underlying payload buffer (fixed size, pre-allocated for writing, or provided for reading)
@@ -101,9 +101,11 @@ pub const BinaryStream = struct {
     pub inline fn write(self: *BinaryStream, value: []const u8) !void {
         const end_pos = self.offset + value.len;
 
-        // Check if we have enough space
         if (end_pos > self.payload.len) {
-            return error.OutOfMemory;
+            if (!self.owns_buffer) return error.OutOfMemory;
+            var next_capacity = if (self.payload.len == 0) DEFAULT_BUFFER_SIZE else self.payload.len;
+            while (next_capacity < end_pos) next_capacity *= 2;
+            self.payload = self.allocator.realloc(self.payload, next_capacity) catch return error.OutOfMemory;
         }
 
         // Direct memory copy
@@ -403,3 +405,23 @@ pub const BinaryStream = struct {
         return try Float64.read(self, endian);
     }
 };
+
+test "stream grows beyond the initial buffer and remains reusable" {
+    const allocator = std.testing.allocator;
+    var stream = BinaryStream.init(allocator, null, null);
+    defer stream.deinit();
+
+    const payload = try allocator.alloc(u8, DEFAULT_BUFFER_SIZE + 1);
+    defer allocator.free(payload);
+    @memset(payload, 0xA5);
+
+    try stream.write(payload);
+    try std.testing.expectEqual(payload.len, stream.written);
+    try std.testing.expect(stream.capacity() > DEFAULT_BUFFER_SIZE);
+    try std.testing.expectEqualSlices(u8, payload, stream.getBuffer());
+
+    stream.reset();
+    try std.testing.expectEqual(@as(usize, 0), stream.written);
+    try stream.write("reused");
+    try std.testing.expectEqualSlices(u8, "reused", stream.getBuffer());
+}
