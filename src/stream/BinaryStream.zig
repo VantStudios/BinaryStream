@@ -1,8 +1,15 @@
 const std = @import("std");
 const Endianess = @import("../enums/Endianess.zig").Endianess;
 
-/// Default buffer size for write streams (64KB)
-pub const DEFAULT_BUFFER_SIZE: usize = 64 * 1024;
+/// Initial buffer size for write streams.
+///
+/// Kept small on purpose: the allocator used by the server (`smp_allocator`)
+/// has a cliff around 64 KB where a plain alloc+free jumps from ~30 ns to
+/// ~6-13 us, and allocating eagerly per stream is the common case (one stream
+/// per packet serialized). `write` grows the buffer geometrically, so large
+/// payloads still work — they just pay a few reallocs instead of paying the
+/// cliff on every stream.
+pub const DEFAULT_BUFFER_SIZE: usize = 4 * 1024;
 
 pub const BinaryStream = struct {
     /// The underlying payload buffer (fixed size, pre-allocated for writing, or provided for reading)
@@ -17,7 +24,8 @@ pub const BinaryStream = struct {
     owns_buffer: bool,
 
     /// Initialize a BinaryStream.
-    /// - If payload is null: allocates a 1MB buffer for writing, `written` starts at 0
+    /// - If payload is null: allocates `DEFAULT_BUFFER_SIZE` bytes for writing
+    ///   (growing on demand in `write`), `written` starts at 0
     /// - If payload is provided: uses that buffer for reading, `written` = payload.len
     pub fn init(allocator: std.mem.Allocator, payload: ?[]const u8, offset: ?usize) BinaryStream {
         if (payload) |data| {
